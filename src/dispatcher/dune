@@ -1,0 +1,10 @@
+(library
+  (name dispatcher)
+  (libraries
+    core
+    eio_main
+  )
+  (preprocess (pps
+    ppx_jane
+  ))
+)

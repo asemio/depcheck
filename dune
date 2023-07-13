@@ -1,0 +1,12 @@
+(dirs src)
+
+(env
+  (dev
+    (flags (:standard -w -58 -warn-error -A))
+    (ocamlopt_flags -Oclassic -unboxed-types)
+  )
+  (release
+    (flags (:standard -w -58 -warn-error -A))
+    (ocamlopt_flags -O3 -unbox-closures -unboxed-types)
+  )
+)

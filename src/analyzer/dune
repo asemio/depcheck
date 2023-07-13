@@ -1,0 +1,18 @@
+(library
+  (name analyzer)
+  (libraries
+    dispatcher
+    render
+    utils
+
+    core
+    core_unix
+    eio_main
+    yojson
+    uri-sexp
+  )
+  (preprocess (pps
+    ppx_jane
+    ppx_deriving_yojson
+  ))
+)

@@ -1,0 +1,21 @@
+(executable
+  (name depcheck)
+  (libraries
+    analyzer
+    dispatcher
+    utils
+
+    core
+    core_unix
+    core_unix.command_unix
+    eio_main
+    eio_posix
+    ppx_deriving_yojson.runtime
+  )
+  (preprocess (pps
+    ppx_jane
+    ppx_deriving_yojson
+  ))
+  (modes exe)
+  (link_flags (:include link_flags.%{system}.%{profile}.dune))
+)

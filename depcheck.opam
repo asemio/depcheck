@@ -1,0 +1,32 @@
+opam-version: "2.0"
+maintainer: "Asemio"
+authors: [
+  "Simon Grondin"
+]
+synopsis: "Dependency checker"
+description: """
+depcheck checks your projects for outdated and deprecated dependencies.
+It currently only supports NPM but more systems are planned.
+"""
+license: "NONE"
+tags: ["Dependency" "Dependencies" "npm"]
+homepage: "https://github.com/asemio/depcheck"
+dev-repo: "git://github.com/asemio/depcheck"
+doc: "https://github.com/asemio/depcheck"
+bug-reports: "https://github.com/asemio/depcheck/issues"
+depends: [
+  "ocaml" { >= "5.0.0" }
+  "dune" { >= "1.9.0" }
+
+  "core" { >= "v0.16.0" & < "v0.18.0" }
+  "core_unix" { >= "v0.16.0" & < "v0.18.0" }
+  "eio_main"
+
+  "yojson"
+  "ppx_deriving_yojson" { >= "3.5.2" }
+  "uri-sexp"
+
+  "ocamlformat" { = "0.25.1" & with-test } # Development
+  "ocaml-lsp-server" { with-test } # Development
+]
+build: ["dune" "build" "-p" name "-j" jobs]

@@ -1,0 +1,13 @@
+**/.DS_Store
+.vscode
+_opam/
+_build/
+node_modules/
+**/.merlin
+*.txt
+*.md
+*.exe
+*.mac
+*.linux
+*.tar.gz
+lib/
