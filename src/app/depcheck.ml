@@ -9,6 +9,9 @@ type settings = {
 }
 
 let process_repo env dispatcher repo_root =
+  let repo_root =
+    Utils.External.run ~process_mgr:env#process_mgr [ "realpath"; repo_root ] |> String.rstrip
+  in
   let found = Analyzer.Find.find ~fs:env#fs ~domain_mgr:env#domain_mgr dispatcher ~repo_root in
 
   let problems =
