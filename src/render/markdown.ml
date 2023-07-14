@@ -47,7 +47,7 @@ let render_block buf = function
 
   render_row headers ~f:Buffer.add_string;
   List.iter headers ~f:(fun _ -> Buffer.add_string buf "|-----");
-  Buffer.add_string buf " |\n";
+  Buffer.add_string buf "|\n";
   List.iter rows ~f:(render_row ~f:render_inline)
 
 let render buf doc =

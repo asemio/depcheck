@@ -8,6 +8,7 @@ module Origin = struct
 end
 
 module OriginSet = Set.Make (Origin)
+module OriginMap = Map.Make (Origin)
 
 type kind =
   | Deprecated of string
@@ -39,17 +40,9 @@ let npm_uri ?(bold = true) name =
       label = (if bold then Bold name else Text name);
     }
 
-let origins_to_markdown origins =
-  Set.fold origins ~init:[] ~f:(fun acc -> function
-    | Origin.Dependency s -> npm_uri ~bold:false s :: acc
-    | Origin.DevDependency s -> Many [ Bold "[dev]"; Text " "; npm_uri ~bold:false s ] :: acc )
-  |> List.intersperse ~sep:(Text ", ")
-  |> Many
-
 let kind_to_markdown = function
 | Deprecated s -> Text s
-| Outdated { wanted; latest } ->
-  Many [ Text "Requested: "; Code wanted; Text " (deprecated). Latest: "; Code latest ]
+| Outdated { latest; _ } -> Many [ Text "Latest: "; Code latest ]
 
 let toplevel_problems_to_markdown problems =
   let rows =
@@ -69,11 +62,21 @@ let toplevel_problems_to_markdown problems =
   Table { headers = [ "Name"; "Version"; "Dev only?"; "Problem" ]; rows }
 
 let nested_problems_to_markdown problems =
-  let rows =
-    List.map problems ~f:(fun { kind; dependency; origins; version; _ } ->
-      [ npm_uri dependency; Code version; origins_to_markdown origins; kind_to_markdown kind ] )
+  let by_origin =
+    List.fold problems ~init:OriginMap.empty ~f:(fun init problem ->
+      Set.fold problem.origins ~init ~f:(fun acc origin -> Map.add_multi acc ~key:origin ~data:problem) )
   in
-  Table { headers = [ "Name"; "Version"; "From"; "Problem" ]; rows }
+  let rows =
+    Map.fold_right by_origin ~init:[] ~f:(fun ~key:origin ~data:problems init ->
+      let source =
+        match origin with
+        | Dependency s -> npm_uri s
+        | DevDependency s -> Many [ Bold "[dev]"; Text " "; npm_uri s ]
+      in
+      List.fold_right problems ~init ~f:(fun { dependency; version; kind; _ } acc ->
+        [ source; npm_uri ~bold:false dependency; Code version; kind_to_markdown kind ] :: acc ) )
+  in
+  Table { headers = [ "Top-level"; "Nested"; "Version"; "Problem" ]; rows }
 
 let to_markdown buf ~directory (problems : t list) =
   let toplevel, nested = List.partition_tf problems ~f:(fun { is_top_level; _ } -> is_top_level) in
@@ -85,9 +88,7 @@ let to_markdown buf ~directory (problems : t list) =
       toplevel_problems_to_markdown toplevel;
       Header (3, "Nested issues");
       nested_problems_to_markdown nested;
-    ];
-
-  ()
+    ]
 
 let all_to_markdown (problems : t list String.Map.t) =
   let buf = Buffer.create 8192 in

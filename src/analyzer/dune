@@ -8,8 +8,9 @@
     core
     core_unix
     eio_main
-    yojson
+    re
     uri-sexp
+    yojson
   )
   (preprocess (pps
     ppx_jane

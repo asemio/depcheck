@@ -79,8 +79,7 @@ let () =
 
   common
   >>| (fun common () ->
-        (* TODO: Revert to Eio_main.run once Eio 0.11 is released *)
-        Eio_posix.run (fun env ->
+        Eio_main.run (fun env ->
           try main common env () with
           | exn when not common.debug -> handle_system_failure env#stderr exn ))
   |> basic ~summary:"Check your dependencies - https://github.com/asemio/depcheck"

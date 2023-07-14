@@ -20,10 +20,11 @@ depends: [
 
   "core" { >= "v0.16.0" & < "v0.18.0" }
   "core_unix" { >= "v0.16.0" & < "v0.18.0" }
-  "eio_main"
+  "eio_main" { = "0.11" }
 
   "yojson"
   "ppx_deriving_yojson" { >= "3.5.2" }
+  "re"
   "uri-sexp"
 
   "ocamlformat" { = "0.25.1" & with-test } # Development

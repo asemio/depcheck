@@ -1,4 +1,5 @@
 open! Core
+open Eio.Std
 
 type 'a jobject = 'a String.Map.t [@@deriving sexp]
 
@@ -28,6 +29,8 @@ module Packagelockjson = struct
       version: string;
       deprecated: string option; [@default None]
       dependencies: string jobject; [@default String.Map.empty]
+      peer_dependencies: string jobject; [@key "peerDependencies"] [@default String.Map.empty]
+      optional_dependencies: string jobject; [@key "optionalDependencies"] [@default String.Map.empty]
     }
     [@@deriving sexp, of_yojson { strict = false }]
 
@@ -44,7 +47,11 @@ module Packagelockjson = struct
     dependencies: string String.Map.t;
     origins: Problem.OriginSet.t;
   }
-  [@@deriving sexp, stable_record ~version:Raw.package ~remove:[ origins ]]
+  [@@deriving
+    sexp,
+      stable_record ~version:Raw.package ~remove:[ origins ]
+        ~add:[ peer_dependencies; optional_dependencies ]
+        ~modify:[ dependencies ]]
 
   type t = {
     name: string;
@@ -52,6 +59,29 @@ module Packagelockjson = struct
     is_parent_of: string list String.Map.t;
   }
   [@@deriving sexp]
+
+  (* Highest priority to the "right" *)
+  let merge_dependencies ll =
+    List.reduce ll ~f:(fun left right ->
+      Map.merge left right ~f:(fun ~key:_ -> function
+        | `Left x
+         |`Right x
+         |`Both (_, x) ->
+          Some x ) )
+    |> Option.value_exn ~here:[%here]
+
+  let canonicalize =
+    let re = Re.Perl.compile_pat "node_modules/" in
+    (fun name -> Re.split re name |> List.last_exn)
+
+  (* Highest priority to the "right" *)
+  let merge_packages left right =
+    {
+      right with
+      deprecated = Option.first_some right.deprecated left.deprecated;
+      dependencies = merge_dependencies [ left.dependencies; right.dependencies ];
+      origins = Set.union left.origins right.origins;
+    }
 
   let of_json_string (packagejson : Packagejson.t) raw =
     let parsed = Yojson.Safe.from_string raw |> [%of_yojson: Raw.t] |> Result.ok_or_failwith in
@@ -67,8 +97,17 @@ module Packagelockjson = struct
                bug"
               key ()
           | Some key ->
-            let data = package_of_Raw_package raw ~origins:Problem.OriginSet.empty in
-            Map.add_exn acc ~key ~data ) )
+            let realname = canonicalize key in
+            let is_main = String.(realname = key) in
+            let data =
+              package_of_Raw_package raw ~origins:Problem.OriginSet.empty
+                ~modify_dependencies:(fun dependencies ->
+                merge_dependencies [ raw.peer_dependencies; raw.optional_dependencies; dependencies ] )
+            in
+            Map.update acc realname ~f:(function
+              | None -> data
+              | Some existing ->
+                if is_main then merge_packages existing data else merge_packages data existing ) ) )
     in
     let is_parent_of =
       Map.fold packages_no_origins ~init:String.Map.empty
@@ -79,7 +118,7 @@ module Packagelockjson = struct
     let rec walk_down ~top acc name =
       match Map.find acc name with
       | None ->
-        Eio.traceln "Dependency not found: '%s'. Ignoring it." name;
+        (* This can happen for some peerDependencies *)
         acc
       | Some found when Set.mem found.origins top -> acc
       | Some found ->
@@ -122,7 +161,7 @@ let check ~fs ~process_mgr ~npm_limiter ~directory =
   let raw_packagejson = Eio.Path.load Eio.Path.(fs / directory / "package.json") in
   let packagejson = Packagejson.of_json_string raw_packagejson in
 
-  (* Eio.traceln !"%{sexp#hum: Packagejson.t}" packagejson; *)
+  (* traceln !"%{sexp#hum: Packagejson.t}" packagejson; *)
 
   (* Create temp directory and copy package.json into it *)
   let temp_dir =
@@ -132,7 +171,7 @@ let check ~fs ~process_mgr ~npm_limiter ~directory =
     Eio.Path.with_open_out ~create:(`Or_truncate 0o600)
       Eio.Path.(fs / dir / "package.json")
       (fun file -> Eio.Flow.copy_string raw_packagejson file);
-    Eio.traceln "Analyzing [%s] at [%s]" directory dir;
+    traceln "Analyzing [%s] at [%s]" directory dir;
     dir
   in
 
@@ -144,7 +183,7 @@ let check ~fs ~process_mgr ~npm_limiter ~directory =
         [ "npm"; "install"; "--package-lock-only"; "--legacy-peer-deps"; "--json"; "--no-progress" ] )
   in
 
-  (* Eio.traceln "NPM OUTPUT: %s" _output; *)
+  (* traceln "NPM OUTPUT: %s" _output; *)
 
   (* Parse resulting package-lock.json *)
   let lock =
@@ -152,7 +191,7 @@ let check ~fs ~process_mgr ~npm_limiter ~directory =
     |> Packagelockjson.of_json_string packagejson
   in
 
-  (* Eio.traceln !"%{sexp#hum: Packagelockjson.t}" lock; *)
+  (* traceln !"%{sexp#hum: Packagelockjson.t}" lock; *)
 
   (* Run [npm outdated] in temp directory *)
   let outdated =
@@ -163,7 +202,7 @@ let check ~fs ~process_mgr ~npm_limiter ~directory =
     |> Outdated.of_json_string
   in
 
-  (* Eio.traceln !"%{sexp#hum: Outdated.t}" outdated; *)
+  (* traceln !"%{sexp#hum: Outdated.t}" outdated; *)
 
   (* Generate a list of issues *)
   let problems =
@@ -171,17 +210,20 @@ let check ~fs ~process_mgr ~npm_limiter ~directory =
     (* Add outdated *)
     let init =
       Map.fold_right outdated ~init ~f:(fun ~key ~data:{ wanted; latest; _ } acc ->
-        let package = Packagelockjson.get_package lock key in
-        {
-          kind = Outdated { wanted; latest };
-          directory;
-          lang = NPM;
-          dependency = key;
-          is_top_level = Packagejson.is_top_level packagejson key;
-          version = package.version;
-          origins = package.origins;
-        }
-        :: acc )
+        match String.( = ) wanted latest with
+        | true -> acc
+        | false ->
+          let package = Packagelockjson.get_package lock key in
+          {
+            kind = Outdated { wanted; latest };
+            directory;
+            lang = NPM;
+            dependency = key;
+            is_top_level = Packagejson.is_top_level packagejson key;
+            version = package.version;
+            origins = package.origins;
+          }
+          :: acc )
     in
     (* Add deprecated *)
     let init =
