@@ -8,9 +8,9 @@ type settings = {
   debug: bool;
 }
 
-let process_repo env dispatcher repo_root =
+let process_repo env dispatcher arg_path ~just_one =
   let repo_root =
-    Utils.External.run ~process_mgr:env#process_mgr [ "realpath"; repo_root ] |> String.rstrip
+    Utils.External.run ~process_mgr:env#process_mgr [ "realpath"; arg_path ] |> String.rstrip
   in
   let found = Analyzer.Find.find ~fs:env#fs ~domain_mgr:env#domain_mgr dispatcher ~repo_root in
 
@@ -26,18 +26,28 @@ let process_repo env dispatcher repo_root =
              | C_Sharp -> [] )
            |> List.concat
          in
-         let directory = Filename.of_absolute_exn key ~relative_to:repo_root in
+         let directory =
+           match Filename.of_absolute_exn key ~relative_to:repo_root with
+           | "." when Hashtbl.length found = 1 -> arg_path
+           | relative -> relative
+         in
          Option.some_if (not (List.is_empty problems)) (directory, problems) )
     |> String.Map.of_alist_exn
   in
 
-  let target = "depcheck-results.md" in
+  let target =
+    match just_one with
+    | true -> "depcheck-results.md"
+    | false ->
+      String.map arg_path ~f:(function
+        | ('a' .. 'z' | 'A' .. 'Z' | '0' .. '9' | '-' | '.') as c -> c
+        | _ -> '_' )
+      |> sprintf "depcheck-results-%s.md"
+  in
   traceln "Generating results: [%s]" target;
   Eio.Path.with_open_out ~create:(`Or_truncate 0o644)
     Eio.Path.(env#fs / target)
-    (fun file -> Eio.Flow.copy_string (Analyzer.Problem.all_to_markdown problems) file);
-
-  traceln "Done."
+    (fun file -> Eio.Flow.copy_string (Analyzer.Problem.all_to_markdown problems) file)
 
 let main settings env () =
   (* Validate npm version *)
@@ -52,7 +62,13 @@ let main settings env () =
 
   Switch.run @@ fun sw ->
   let dispatcher = Dispatcher.create ~sw ~num_domains:4 ~domain_concurrency:2 env#domain_mgr in
-  Fiber.List.iter (process_repo env dispatcher) settings.repos
+  let just_one =
+    match settings.repos with
+    | [ _ ] -> true
+    | _ -> false
+  in
+  Fiber.List.iter (process_repo env dispatcher ~just_one) settings.repos;
+  traceln "Done."
 
 let () =
   let open Command in

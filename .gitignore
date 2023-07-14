@@ -5,7 +5,7 @@ _build/
 node_modules/
 **/.merlin
 *.txt
-*.md
+depcheck-results.md
 *.exe
 *.mac
 *.linux

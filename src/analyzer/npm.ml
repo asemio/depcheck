@@ -247,5 +247,6 @@ let check ~fs ~process_mgr ~npm_limiter ~directory =
 
   (* Clean up after ourselves *)
   Utils.Io.rm_rf ~fs temp_dir;
+  traceln "Finished [%s]" directory;
 
   problems
