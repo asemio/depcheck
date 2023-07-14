@@ -197,7 +197,7 @@ let check ~fs ~process_mgr ~npm_limiter ~directory =
   let outdated =
     Utils.External.run
       ~cwd:Eio.Path.(fs / temp_dir)
-      ~process_mgr
+      ~process_mgr ~success_codes:[ 0; 1 ]
       [ "npm"; "outdated"; "--json"; "-l"; "-a" ]
     |> Outdated.of_json_string
   in
