@@ -52,7 +52,7 @@ let process_repo env dispatcher arg_path ~just_one =
 let main settings env () =
   (* Validate npm version *)
   let () =
-    let out = Utils.External.run ~process_mgr:env#process_mgr [ "npm"; "--version" ] in
+    let out = Utils.External.run ~process_mgr:env#process_mgr [ "npm"; "--version" ] |> String.rstrip in
     match String.split out ~on:'.' with
     | s :: _ ->
       if Int.of_string s < 7

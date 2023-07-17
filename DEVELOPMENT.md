@@ -42,6 +42,7 @@ dune build -w
 dune exec src/app/depcheck.exe arguments...
 
 # Release:
+# Don't forget to update the version number in [depcheck.ml]!
 dune clean \
 && DUNE_PROFILE=release dune build \
 && rm -f depcheck.mac \
@@ -55,19 +56,17 @@ dune clean \
 docker build . -t depcheck:latest
 
 DEPCHECK_CID="$(docker create depcheck:latest)" \
-&& rm -rf depcheck.linux depcheck.linux.tar.gz lib \
+&& rm -f depcheck.linux \
 && docker cp "$DEPCHECK_CID":/app/depcheck.exe depcheck.linux \
-&& docker cp "$DEPCHECK_CID":/app/lib lib \
-&& docker rm "$DEPCHECK_CID" \
-&& tar czvf depcheck.linux.tar.gz depcheck.linux lib
+&& docker rm "$DEPCHECK_CID"
 
-# Trying it on Ubuntu 20.04
+# Trying it on Ubuntu 22.04
 docker run -it --rm \
   -v "$(pwd):/app" \
   -v "$(realpath "$(pwd)/../francis-tuttle"):/repo" \
   -w /repo \
-  ubuntu:20.04
+  ubuntu:22.04
   # Then run:
-  ## apt-get update && apt-get install musl
+  ## apt-get update && apt-get install -y musl npm
   ## /app/depcheck.linux /repo
 ```
