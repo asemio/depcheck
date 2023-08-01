@@ -3,6 +3,7 @@ open! Core
 type inline =
   | Text of string
   | Bold of string
+  | BoldI of inline
   | Italic of string
   | Code of string
   | Link of {
@@ -11,6 +12,11 @@ type inline =
     }
   | Nothing
   | Many of inline list
+  | Li of inline list
+  | Details of {
+      summary: string;
+      contents: inline;
+    }
 
 type block =
   | Block of inline list
@@ -23,6 +29,10 @@ type block =
 let rec render_inline buf = function
 | Text s -> Buffer.add_string buf s
 | Bold s -> bprintf buf "**%s**" s
+| BoldI x ->
+  Buffer.add_string buf "**";
+  render_inline buf x;
+  Buffer.add_string buf "**"
 | Italic s -> bprintf buf "*%s*" s
 | Code s -> bprintf buf "`%s`" s
 | Link { href; label } ->
@@ -31,6 +41,17 @@ let rec render_inline buf = function
   bprintf buf !"](%{Uri})" href
 | Nothing -> ()
 | Many ll -> List.iter ll ~f:(render_inline buf)
+| Li ll ->
+  Buffer.add_string buf "<ul>";
+  List.iter ll ~f:(fun x ->
+    Buffer.add_string buf "<li>";
+    render_inline buf x;
+    Buffer.add_string buf "</li>" );
+  Buffer.add_string buf "</ul>"
+| Details { summary; contents } ->
+  bprintf buf "<details><summary>%s</summary>" summary;
+  render_inline buf contents;
+  Buffer.add_string buf "</details>"
 
 let render_block buf = function
 | Block ll -> List.iter ll ~f:(render_inline buf)

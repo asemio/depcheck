@@ -5,4 +5,4 @@ val check :
   process_mgr:#Eio.Process.mgr ->
   npm_limiter:Dispatcher.t ->
   directory:string ->
-  Problem.t list
+  Problem.kind Problem.t list

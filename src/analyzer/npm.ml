@@ -1,5 +1,6 @@
 open! Core
 open Eio.Std
+open Result.Let_syntax
 
 type 'a jobject = 'a String.Map.t [@@deriving sexp]
 
@@ -42,15 +43,19 @@ module Packagelockjson = struct
   end
 
   type package = {
-    version: string;
+    name: string;
+    main_version: string;
+    other_versions: Problem.other_versions String.Map.t;
     deprecated: string option;
     dependencies: string String.Map.t;
     origins: Problem.OriginSet.t;
+    version_by_parent: Problem.VersionInfoSet.t;
   }
   [@@deriving
     sexp,
-      stable_record ~version:Raw.package ~remove:[ origins ]
-        ~add:[ peer_dependencies; optional_dependencies ]
+      stable_record ~version:Raw.package
+        ~remove:[ origins; name; main_version; other_versions; version_by_parent ]
+        ~add:[ version; peer_dependencies; optional_dependencies ]
         ~modify:[ dependencies ]]
 
   type t = {
@@ -70,9 +75,11 @@ module Packagelockjson = struct
           Some x ) )
     |> Option.value_exn ~here:[%here]
 
-  let canonicalize =
-    let re = Re.Perl.compile_pat "node_modules/" in
-    (fun name -> Re.split re name |> List.last_exn)
+  let re_canonicalize = Re.Perl.compile_pat "node_modules/"
+
+  let canonicalize name =
+    let chunks = Re.split re_canonicalize name in
+    List.last_exn chunks, String.concat chunks
 
   (* Highest priority to the "right" *)
   let merge_packages left right =
@@ -81,6 +88,16 @@ module Packagelockjson = struct
       deprecated = Option.first_some right.deprecated left.deprecated;
       dependencies = merge_dependencies [ left.dependencies; right.dependencies ];
       origins = Set.union left.origins right.origins;
+      other_versions =
+        Map.merge left.other_versions right.other_versions ~f:(fun ~key -> function
+          | `Left x
+           |`Right x ->
+            Some x
+          | `Both (x, y) ->
+            failwithf
+              !"Duplicate other_versions (%s) '%{sexp: Problem.other_versions}' vs '%{sexp: \
+                Problem.other_versions}'. Please report this bug."
+              key x y () );
     }
 
   let of_json_string (packagejson : Packagejson.t) raw =
@@ -89,25 +106,31 @@ module Packagelockjson = struct
       Map.fold parsed.packages ~init:String.Map.empty ~f:(fun ~key ~data:raw acc ->
         match key with
         | "" -> acc
-        | key -> (
-          match String.chop_prefix key ~prefix:"node_modules/" with
-          | None ->
-            failwithf
-              "package-lock.json dependency '%s' did not start with 'node_modules/'. Please report this \
-               bug"
-              key ()
-          | Some key ->
-            let realname = canonicalize key in
-            let is_main = String.(realname = key) in
-            let data =
-              package_of_Raw_package raw ~origins:Problem.OriginSet.empty
-                ~modify_dependencies:(fun dependencies ->
-                merge_dependencies [ raw.peer_dependencies; raw.optional_dependencies; dependencies ] )
-            in
-            Map.update acc realname ~f:(function
-              | None -> data
-              | Some existing ->
-                if is_main then merge_packages existing data else merge_packages data existing ) ) )
+        | key ->
+          let realname, specific_name = canonicalize key in
+          let is_main = String.( = ) realname specific_name in
+          let other_versions =
+            if is_main
+            then String.Map.empty
+            else
+              String.Map.singleton specific_name
+                Problem.
+                  {
+                    name = specific_name;
+                    version = raw.version;
+                    is_top = Packagejson.is_top_level packagejson specific_name;
+                  }
+          in
+          let data =
+            package_of_Raw_package raw ~name:realname ~origins:Problem.OriginSet.empty
+              ~main_version:raw.version ~other_versions ~version_by_parent:Problem.VersionInfoSet.empty
+              ~modify_dependencies:(fun dependencies ->
+              merge_dependencies [ raw.peer_dependencies; raw.optional_dependencies; dependencies ] )
+          in
+          Map.update acc realname ~f:(function
+            | None -> data
+            | Some existing ->
+              if is_main then merge_packages existing data else merge_packages data existing ) )
     in
     let is_parent_of =
       Map.fold packages_no_origins ~init:String.Map.empty
@@ -115,27 +138,45 @@ module Packagelockjson = struct
         Map.fold dependencies ~init:acc ~f:(fun ~key:dependency ~data:_ acc ->
           Map.add_multi acc ~key:dependency ~data:current ) )
     in
-    let rec walk_down ~top acc name =
+    let rec walk_down ~(added_by : Problem.version_info) acc name =
       match Map.find acc name with
       | None ->
         (* This can happen for some peerDependencies *)
         acc
-      | Some found when Set.mem found.origins top -> acc
       | Some found ->
         let init =
           Map.change acc name ~f:(function
             | None -> assert false
-            | Some package -> Some { package with origins = Set.add package.origins top } )
+            | Some package ->
+              Some
+                {
+                  package with
+                  origins = Set.add package.origins added_by.top;
+                  version_by_parent = Set.add package.version_by_parent added_by;
+                } )
         in
-        Map.fold found.dependencies ~init ~f:(fun ~key ~data:_ acc -> walk_down ~top acc key)
+        if Set.mem found.origins added_by.top
+        then init
+        else
+          Map.fold found.dependencies ~init ~f:(fun ~key ~data:range acc ->
+            let added_by =
+              Problem.{ added_by_is_top = false; added_by = name; version = range; top = added_by.top }
+            in
+            walk_down ~added_by acc key )
     in
     let packages =
       let init =
-        Map.fold packagejson.dependencies ~init:packages_no_origins ~f:(fun ~key:top ~data:_ acc ->
-          walk_down ~top:(Dependency top) acc top )
+        Map.fold packagejson.dependencies ~init:packages_no_origins ~f:(fun ~key:top ~data:range acc ->
+          let added_by =
+            Problem.{ added_by_is_top = true; added_by = top; version = range; top = Dependency top }
+          in
+          walk_down ~added_by acc top )
       in
-      Map.fold packagejson.dev_dependencies ~init ~f:(fun ~key:top ~data:_ acc ->
-        walk_down ~top:(DevDependency top) acc top )
+      Map.fold packagejson.dev_dependencies ~init ~f:(fun ~key:top ~data:range acc ->
+        let added_by =
+          Problem.{ added_by_is_top = true; added_by = top; version = range; top = DevDependency top }
+        in
+        walk_down ~added_by acc top )
     in
     { name = parsed.name; packages; is_parent_of }
 
@@ -153,6 +194,103 @@ module Outdated = struct
   [@@deriving sexp, of_yojson { strict = false }]
 
   type t = entry jobject [@@deriving sexp, of_yojson]
+
+  let of_json_string raw = Yojson.Safe.from_string raw |> [%of_yojson: t] |> Result.ok_or_failwith
+end
+
+module Audit = struct
+  module Severity = struct
+    type t =
+      | Other of string
+      | Info
+      | Low
+      | Moderate
+      | High
+      | Critical
+    [@@deriving sexp, compare]
+
+    let to_string = function
+    | Info -> "Info"
+    | Low -> "Low"
+    | Moderate -> "Moderate"
+    | High -> "High"
+    | Critical -> "Critical"
+    | Other s -> s
+
+    let of_yojson = function
+    | `String "info" -> Ok Info
+    | `String "low" -> Ok Low
+    | `String "moderate" -> Ok Moderate
+    | `String "high" -> Ok High
+    | `String "critical" -> Ok Critical
+    | `String s -> Ok (Other s)
+    | json -> Error (sprintf !"Unexpected JSON for severity: '%{Yojson.Safe}'" json)
+  end
+
+  module Fix_available = struct
+    type fix_available = {
+      name: string;
+      version: string;
+    }
+    [@@deriving sexp, of_yojson { strict = false }]
+
+    type t = fix_available option [@@deriving sexp]
+
+    let of_yojson = function
+    | `Null
+     |`Bool _ ->
+      Ok None
+    | `Assoc _ as json -> [%of_yojson: fix_available] json |> Result.map ~f:Option.return
+    | json -> Error (sprintf !"Unexpected JSON for fix_available: '%{Yojson.Safe}'" json)
+  end
+
+  module Cvs = struct
+    type cvs = {
+      dependency: string;
+      title: string option;
+      url: string option;
+      severity: Severity.t;
+      range: string;
+    }
+    [@@deriving sexp, of_yojson { strict = false }]
+
+    type t = cvs list [@@deriving sexp]
+
+    let of_yojson = function
+    | `List ll ->
+      Ok
+        (List.filter_map ll ~f:(function
+          | `String _ -> None
+          | json -> Some ([%of_yojson: cvs] json |> Result.ok_or_failwith) ) )
+    | json -> Error (sprintf !"Unexpected JSON for via: '%{Yojson.Safe}'" json)
+  end
+
+  type entry = {
+    name: string;
+    severity: Severity.t;
+    range: string;
+    fix_available: Fix_available.t; [@default None] [@key "fixAvailable"]
+    via: Cvs.t; [@default []]
+    affected: string list; [@key "effects"]
+  }
+  [@@deriving sexp, of_yojson { strict = false }]
+
+  type parsed = { vulnerabilities: entry jobject } [@@deriving sexp, of_yojson { strict = false }]
+
+  type t = entry list [@@deriving sexp]
+
+  let of_yojson yojson =
+    let%map parsed = [%of_yojson: parsed] yojson in
+    Map.data parsed.vulnerabilities
+    |> List.map ~f:(fun entry ->
+         {
+           entry with
+           affected = (if List.is_empty entry.affected then [ entry.name ] else entry.affected);
+           via =
+             List.sort entry.via ~compare:(fun { severity = x; _ } { severity = y; _ } ->
+               [%compare: Severity.t] y x );
+         } )
+    |> List.sort ~compare:(fun { severity = x; _ } { severity = y; _ } -> [%compare: Severity.t] y x)
 
   let of_json_string raw = Yojson.Safe.from_string raw |> [%of_yojson: t] |> Result.ok_or_failwith
 end
@@ -176,14 +314,14 @@ let check ~fs ~process_mgr ~npm_limiter ~directory =
   in
 
   (* Run [npm install] in temp directory *)
-  let _output =
+  let _npm_install_output =
     Dispatcher.run_exn npm_limiter ~f:(fun () ->
       Utils.External.run ~process_mgr
         ~cwd:Eio.Path.(fs / temp_dir)
         [ "npm"; "install"; "--package-lock-only"; "--legacy-peer-deps"; "--json"; "--no-progress" ] )
   in
 
-  (* traceln "NPM OUTPUT: %s" _output; *)
+  (* traceln "NPM INSTALL OUTPUT: %s" _npm_install_output; *)
 
   (* Parse resulting package-lock.json *)
   let lock =
@@ -204,9 +342,21 @@ let check ~fs ~process_mgr ~npm_limiter ~directory =
 
   (* traceln !"%{sexp#hum: Outdated.t}" outdated; *)
 
+  (* Run [npm audit] in temp directory *)
+  let audit =
+    Dispatcher.run_exn npm_limiter ~f:(fun () ->
+      Utils.External.run ~process_mgr
+        ~cwd:Eio.Path.(fs / temp_dir)
+        [ "npm"; "audit"; "--package-lock-only"; "--audit-level=none"; "--json"; "--no-progress" ] )
+    |> Audit.of_json_string
+  in
+
+  (* traceln !"%{sexp#hum: Audit.t}" audit; *)
+
   (* Generate a list of issues *)
   let problems =
-    let init : Problem.t list = [] in
+    let open Problem in
+    let init = [] in
     (* Add outdated *)
     let init =
       Map.fold_right outdated ~init ~f:(fun ~key ~data:{ wanted; latest; _ } acc ->
@@ -215,32 +365,80 @@ let check ~fs ~process_mgr ~npm_limiter ~directory =
         | false ->
           let package = Packagelockjson.get_package lock key in
           {
-            kind = Outdated { wanted; latest };
+            info = Outdated { wanted; latest };
             directory;
             lang = NPM;
             dependency = key;
             is_top_level = Packagejson.is_top_level packagejson key;
-            version = package.version;
+            main_version = package.main_version;
+            other_versions = package.other_versions;
+            version_by_parent = package.version_by_parent;
             origins = package.origins;
           }
           :: acc )
     in
     (* Add deprecated *)
     let init =
-      Map.fold_right lock.packages ~init ~f:(fun ~key ~data:{ deprecated; version; origins; _ } acc ->
+      Map.fold_right lock.packages ~init
+        ~f:(fun ~key ~data:{ deprecated; main_version; other_versions; version_by_parent; origins; _ } acc
+           ->
         match deprecated with
         | None -> acc
         | Some msg ->
           {
-            kind = Deprecated msg;
+            info = Deprecated msg;
             directory;
             lang = NPM;
             dependency = key;
             is_top_level = Packagejson.is_top_level packagejson key;
-            version;
+            main_version;
+            other_versions;
+            version_by_parent;
             origins;
           }
           :: acc )
+    in
+    (* Add audit *)
+    let init =
+      List.fold_right audit ~init
+        ~f:(fun { name = _; severity = _; range = _; fix_available; via; affected } acc ->
+        let fix_available =
+          Option.map fix_available ~f:(fun { name; version } ->
+            let package = Packagelockjson.get_package lock name in
+            { name; fixed_version = version; current_main_version = package.main_version } )
+        in
+        let affected =
+          List.map affected ~f:(fun key ->
+            let package = Packagelockjson.get_package lock key in
+            {
+              name = package.name;
+              origins = package.origins;
+              is_top_level = Packagejson.is_top_level packagejson package.name;
+            } )
+        in
+        List.fold_right via ~init:acc ~f:(fun { dependency; title; url; severity; range } acc ->
+          let package = Packagelockjson.get_package lock dependency in
+          {
+            info =
+              Security
+                {
+                  affected;
+                  range;
+                  severity = Audit.Severity.to_string severity;
+                  fix_available;
+                  message = Option.value title ~default:"Link";
+                  url;
+                };
+            directory;
+            lang = NPM;
+            dependency;
+            is_top_level = Packagejson.is_top_level packagejson dependency;
+            main_version = package.main_version;
+            other_versions = package.other_versions;
+            version_by_parent = package.version_by_parent;
+            origins = package.origins;
+          }
+          :: acc ) )
     in
     init
   in

@@ -1,12 +1,14 @@
 open! Core
 open Eio.Std
 
-let version = "0.0.4"
+let version = "0.0.5"
 
 type settings = {
   repos: string list;
   debug: bool;
 }
+
+let minimal_npm_major_version = 7
 
 let process_repo env dispatcher arg_path ~just_one =
   let repo_root =
@@ -47,7 +49,7 @@ let process_repo env dispatcher arg_path ~just_one =
   traceln "Generating results: [%s]" target;
   Eio.Path.with_open_out ~create:(`Or_truncate 0o644)
     Eio.Path.(env#fs / target)
-    (fun file -> Eio.Flow.copy_string (Analyzer.Problem.all_to_markdown problems) file)
+    (fun file -> Eio.Flow.copy_string (Analyzer.Report.all_to_markdown problems) file)
 
 let main settings env () =
   (* Validate npm version *)
@@ -55,7 +57,7 @@ let main settings env () =
     let out = Utils.External.run ~process_mgr:env#process_mgr [ "npm"; "--version" ] |> String.rstrip in
     match String.split out ~on:'.' with
     | s :: _ ->
-      if Int.of_string s < 7
+      if Int.of_string s < minimal_npm_major_version
       then failwithf "depcheck requires npm v7+ but this appears to be version '%s'" out ()
     | [] -> failwithf "Failed to get a valid npm version: '%s'" out ()
   in
