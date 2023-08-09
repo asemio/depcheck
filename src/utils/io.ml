@@ -16,6 +16,13 @@ let create_dir_if_not_exists ~fs path ~perm =
   try Eio.Path.mkdir ~perm Eio.Path.(fs / path) with
   | Eio.Io (Eio.Fs.E (Eio.Fs.Already_exists _), _) -> ()
 
+let file_exists dispatcher path =
+  Dispatcher.run_exn dispatcher ~f:(fun () ->
+    match Core_unix.stat path with
+    | { st_kind = S_REG; _ } -> true
+    | _ -> false
+    | exception _ -> false )
+
 let rec rm_rf ~fs target =
   match stat_is_dir target with
   | None -> ()

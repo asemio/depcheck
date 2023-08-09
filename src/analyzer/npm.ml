@@ -62,17 +62,13 @@ module Packagelockjson = struct
     name: string;
     main_version: string;
     other_versions: Problem.other_versions String.Map.t;
-    deprecated: string option;
+    deprecated_main: string option;
+    deprecated_specific: string option;
     dependencies: string String.Map.t;
     origins: Problem.OriginSet.t;
     version_by_parent: Problem.VersionInfoSet.t;
   }
-  [@@deriving
-    sexp,
-      stable_record ~version:Raw.package
-        ~remove:[ origins; name; main_version; other_versions; version_by_parent ]
-        ~add:[ version; peer_dependencies; optional_dependencies ]
-        ~modify:[ dependencies ]]
+  [@@deriving sexp]
 
   type t = {
     name: string;
@@ -101,7 +97,8 @@ module Packagelockjson = struct
   let merge_packages left right =
     {
       right with
-      deprecated = Option.first_some right.deprecated left.deprecated;
+      deprecated_main = Option.first_some right.deprecated_main left.deprecated_main;
+      deprecated_specific = Option.first_some right.deprecated_specific left.deprecated_specific;
       dependencies = merge_dependencies [ left.dependencies; right.dependencies ];
       origins = Set.union left.origins right.origins;
       other_versions =
@@ -119,38 +116,46 @@ module Packagelockjson = struct
   let of_json_string (packagejson : Packagejson.t) raw =
     let parsed_name, parsed_packages =
       match Yojson.Safe.from_string raw |> [%of_yojson: Raw.t] with
-      | Ok { name; packages } -> name, Map.filter_map packages ~f:Fn.id
+      | Ok { name; packages } ->
+        let filtered =
+          Map.filter_mapi packages ~f:(fun ~key ~data -> if String.is_empty key then None else data)
+        in
+        name, filtered
       | Error msg -> failwith msg
     in
     let packages_no_origins =
       Map.fold parsed_packages ~init:String.Map.empty ~f:(fun ~key ~data:raw acc ->
-        match key with
-        | "" -> acc
-        | key ->
-          let realname, specific_name = canonicalize key in
-          let is_main = String.( = ) realname specific_name in
-          let other_versions =
-            if is_main
-            then String.Map.empty
-            else
-              String.Map.singleton specific_name
-                Problem.
-                  {
-                    name = specific_name;
-                    version = raw.version;
-                    is_top = Packagejson.is_top_level packagejson specific_name;
-                  }
-          in
-          let data =
-            package_of_Raw_package raw ~name:realname ~origins:Problem.OriginSet.empty
-              ~main_version:raw.version ~other_versions ~version_by_parent:Problem.VersionInfoSet.empty
-              ~modify_dependencies:(fun dependencies ->
-              merge_dependencies [ raw.peer_dependencies; raw.optional_dependencies; dependencies ] )
-          in
-          Map.update acc realname ~f:(function
-            | None -> data
-            | Some existing ->
-              if is_main then merge_packages existing data else merge_packages data existing ) )
+        let realname, specific_name = canonicalize key in
+        let is_main = String.( = ) realname specific_name in
+        let other_versions =
+          if is_main
+          then String.Map.empty
+          else
+            String.Map.singleton specific_name
+              Problem.
+                {
+                  name = specific_name;
+                  version = raw.version;
+                  is_top = Packagejson.is_top_level packagejson specific_name;
+                }
+        in
+        let data : package =
+          {
+            name = realname;
+            main_version = raw.version;
+            other_versions;
+            deprecated_main = (if is_main then raw.deprecated else None);
+            deprecated_specific = (if is_main then None else raw.deprecated);
+            dependencies =
+              merge_dependencies [ raw.peer_dependencies; raw.optional_dependencies; raw.dependencies ];
+            origins = Problem.OriginSet.empty;
+            version_by_parent = Problem.VersionInfoSet.empty;
+          }
+        in
+        Map.update acc realname ~f:(function
+          | None -> data
+          | Some existing ->
+            if is_main then merge_packages existing data else merge_packages data existing ) )
     in
     let is_parent_of =
       Map.fold packages_no_origins ~init:String.Map.empty
@@ -324,10 +329,12 @@ let check ~debug ~fs ~process_mgr ~npm_limiter ~directory =
   (* Create temp directory and copy package.json into it *)
   let temp_dir =
     let dir = sprintf "/tmp/%d" ([%hash: string] directory) in
-    if not debug
-    then (
+    let perm = 0o700 in
+    if debug
+    then Utils.Io.create_dir_if_not_exists ~fs ~perm dir
+    else (
       Utils.Io.rm_rf ~fs dir;
-      Eio.Path.mkdir ~perm:0o700 Eio.Path.(fs / dir) );
+      Eio.Path.mkdir ~perm Eio.Path.(fs / dir) );
     Eio.Path.with_open_out ~create:(`Or_truncate 0o600)
       Eio.Path.(fs / dir / "package.json")
       (fun file -> Eio.Flow.copy_string raw_packagejson file);
@@ -336,14 +343,17 @@ let check ~debug ~fs ~process_mgr ~npm_limiter ~directory =
   in
 
   (* Run [npm install] in temp directory *)
-  let _npm_install_output =
-    Dispatcher.run_exn npm_limiter ~f:(fun () ->
-      Utils.External.run ~process_mgr
-        ~cwd:Eio.Path.(fs / temp_dir)
-        [ "npm"; "install"; "--package-lock-only"; "--legacy-peer-deps"; "--json"; "--no-progress" ] )
+  let run_npm_install () =
+    let _npm_install_output =
+      Dispatcher.run_exn npm_limiter ~f:(fun () ->
+        Utils.External.run ~process_mgr
+          ~cwd:Eio.Path.(fs / temp_dir)
+          [ "npm"; "install"; "--package-lock-only"; "--legacy-peer-deps"; "--json"; "--no-progress" ] )
+    in
+    ()
   in
-
-  (* traceln "NPM INSTALL OUTPUT: %s" _npm_install_output; *)
+  if not (debug && Utils.Io.file_exists npm_limiter (Filename.concat temp_dir "package-lock.json"))
+  then run_npm_install ();
 
   (* Parse resulting package-lock.json *)
   let lock =
@@ -381,44 +391,76 @@ let check ~debug ~fs ~process_mgr ~npm_limiter ~directory =
     let init = [] in
     (* Add outdated *)
     let init =
-      Map.fold_right outdated ~init ~f:(fun ~key ~data:{ wanted; latest; _ } acc ->
-        match String.( = ) wanted latest with
-        | true -> acc
-        | false ->
-          let package = Packagelockjson.get_package lock key in
+      Map.fold_right outdated ~init ~f:(fun ~key ~data:{ wanted; latest } acc ->
+        let package = Packagelockjson.get_package lock key in
+        let is_top_level = Packagejson.is_top_level packagejson key in
+        let problem =
           {
             info = Outdated { wanted; latest };
             directory;
             lang = NPM;
             dependency = key;
-            is_top_level = Packagejson.is_top_level packagejson key;
+            is_top_level;
             main_version = package.main_version;
             other_versions = package.other_versions;
             version_by_parent = package.version_by_parent;
             origins = package.origins;
           }
-          :: acc )
+        in
+        (* Add top_level problem *)
+        let acc =
+          if is_top_level && String.( <> ) package.main_version latest then problem :: acc else acc
+        in
+        (* Add nested problem *)
+        let acc =
+          if Map.exists package.other_versions ~f:(fun { is_top; version; _ } ->
+               (not is_top) && String.( <> ) version latest )
+          then { problem with is_top_level = false } :: acc
+          else acc
+        in
+        acc )
     in
     (* Add deprecated *)
     let init =
-      Map.fold_right lock.packages ~init
-        ~f:(fun ~key ~data:{ deprecated; main_version; other_versions; version_by_parent; origins; _ } acc
-           ->
-        match deprecated with
-        | None -> acc
-        | Some msg ->
-          {
-            info = Deprecated msg;
-            directory;
-            lang = NPM;
-            dependency = key;
-            is_top_level = Packagejson.is_top_level packagejson key;
-            main_version;
-            other_versions;
-            version_by_parent;
-            origins;
-          }
-          :: acc )
+      Map.fold_right lock.packages ~init ~f:(fun ~key ~data:package acc ->
+        let acc =
+          match package, Packagejson.is_top_level packagejson key with
+          | { deprecated_main = Some msg1; deprecated_specific; _ }, true -> (
+            let problem =
+              {
+                info = Deprecated msg1;
+                directory;
+                lang = NPM;
+                dependency = key;
+                is_top_level = true;
+                main_version = package.main_version;
+                other_versions = package.other_versions;
+                version_by_parent = package.version_by_parent;
+                origins = package.origins;
+              }
+            in
+            match deprecated_specific with
+            | None -> problem :: acc
+            | Some msg2 -> problem :: { problem with info = Deprecated msg2; is_top_level = false } :: acc
+            )
+          | { deprecated_main = Some msg; _ }, false
+           |{ deprecated_specific = Some msg; _ }, false
+           |{ deprecated_main = None; deprecated_specific = Some msg; _ }, true ->
+            {
+              info = Deprecated msg;
+              directory;
+              lang = NPM;
+              dependency = key;
+              is_top_level = false;
+              main_version = package.main_version;
+              other_versions = package.other_versions;
+              version_by_parent = package.version_by_parent;
+              origins = package.origins;
+            }
+            :: acc
+          | { deprecated_main = None; deprecated_specific = None; _ }, _ -> acc
+        in
+        acc )
     in
     (* Add audit *)
     let init =
