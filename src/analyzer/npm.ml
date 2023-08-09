@@ -35,9 +35,25 @@ module Packagelockjson = struct
     }
     [@@deriving sexp, of_yojson { strict = false }]
 
+    type stub = {
+      resolved: string;
+      link: bool;
+    }
+    [@@deriving sexp, of_yojson]
+
+    let package_or_stub_of_yojson = function
+    | `Assoc [] -> Ok None
+    | json -> (
+      match package_of_yojson json with
+      | Ok x -> Ok (Some x)
+      | Error _ as x -> (
+        match [%of_yojson: stub] json with
+        | Ok _ -> Ok None
+        | Error _ -> x ) )
+
     type t = {
       name: string;
-      packages: package jobject; [@default String.Map.empty]
+      packages: (package option[@of_yojson package_or_stub_of_yojson]) jobject; [@default String.Map.empty]
     }
     [@@deriving sexp, of_yojson { strict = false }]
   end
@@ -101,9 +117,13 @@ module Packagelockjson = struct
     }
 
   let of_json_string (packagejson : Packagejson.t) raw =
-    let parsed = Yojson.Safe.from_string raw |> [%of_yojson: Raw.t] |> Result.ok_or_failwith in
+    let parsed_name, parsed_packages =
+      match Yojson.Safe.from_string raw |> [%of_yojson: Raw.t] with
+      | Ok { name; packages } -> name, Map.filter_map packages ~f:Fn.id
+      | Error msg -> failwith msg
+    in
     let packages_no_origins =
-      Map.fold parsed.packages ~init:String.Map.empty ~f:(fun ~key ~data:raw acc ->
+      Map.fold parsed_packages ~init:String.Map.empty ~f:(fun ~key ~data:raw acc ->
         match key with
         | "" -> acc
         | key ->
@@ -178,7 +198,7 @@ module Packagelockjson = struct
         in
         walk_down ~added_by acc top )
     in
-    { name = parsed.name; packages; is_parent_of }
+    { name = parsed_name; packages; is_parent_of }
 
   let get_package lock name =
     match Map.find lock.packages name with
@@ -295,7 +315,7 @@ module Audit = struct
   let of_json_string raw = Yojson.Safe.from_string raw |> [%of_yojson: t] |> Result.ok_or_failwith
 end
 
-let check ~fs ~process_mgr ~npm_limiter ~directory =
+let check ~debug ~fs ~process_mgr ~npm_limiter ~directory =
   let raw_packagejson = Eio.Path.load Eio.Path.(fs / directory / "package.json") in
   let packagejson = Packagejson.of_json_string raw_packagejson in
 
@@ -304,8 +324,10 @@ let check ~fs ~process_mgr ~npm_limiter ~directory =
   (* Create temp directory and copy package.json into it *)
   let temp_dir =
     let dir = sprintf "/tmp/%d" ([%hash: string] directory) in
-    Utils.Io.rm_rf ~fs dir;
-    Eio.Path.mkdir ~perm:0o700 Eio.Path.(fs / dir);
+    if not debug
+    then (
+      Utils.Io.rm_rf ~fs dir;
+      Eio.Path.mkdir ~perm:0o700 Eio.Path.(fs / dir) );
     Eio.Path.with_open_out ~create:(`Or_truncate 0o600)
       Eio.Path.(fs / dir / "package.json")
       (fun file -> Eio.Flow.copy_string raw_packagejson file);
@@ -444,7 +466,7 @@ let check ~fs ~process_mgr ~npm_limiter ~directory =
   in
 
   (* Clean up after ourselves *)
-  Utils.Io.rm_rf ~fs temp_dir;
+  if not debug then Utils.Io.rm_rf ~fs temp_dir;
   traceln "Finished [%s]" directory;
 
   problems

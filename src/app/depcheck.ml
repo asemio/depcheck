@@ -10,7 +10,7 @@ type settings = {
 
 let minimal_npm_major_version = 7
 
-let process_repo env dispatcher arg_path ~just_one =
+let process_repo env ~debug dispatcher arg_path ~just_one =
   let repo_root =
     Utils.External.run ~process_mgr:env#process_mgr [ "realpath"; arg_path ] |> String.rstrip
   in
@@ -24,7 +24,8 @@ let process_repo env dispatcher arg_path ~just_one =
          let problems =
            List.map langs ~f:(function
              | NPM ->
-               Analyzer.Npm.check ~fs:env#fs ~process_mgr:env#process_mgr ~directory:key ~npm_limiter
+               Analyzer.Npm.check ~debug ~fs:env#fs ~process_mgr:env#process_mgr ~directory:key
+                 ~npm_limiter
              | C_Sharp -> [] )
            |> List.concat
          in
@@ -69,7 +70,7 @@ let main settings env () =
     | [ _ ] -> true
     | _ -> false
   in
-  Fiber.List.iter (process_repo env dispatcher ~just_one) settings.repos;
+  Fiber.List.iter (process_repo env ~debug:settings.debug dispatcher ~just_one) settings.repos;
   traceln "Done."
 
 let () =
@@ -81,6 +82,7 @@ let () =
       flag "--debug" ~aliases:[ "-d" ] ~full_flag_required:() no_arg
         ~doc:"Use this option when reporting bugs."
     in
+    let repos = if List.is_empty repos then [ "." ] else repos in
     { repos; debug }
   in
 
