@@ -12,8 +12,8 @@ let jobject_of_yojson f = function
 
 module Packagejson = struct
   type t = {
-    name: string;
-    dependencies: string jobject;
+    name: string option; [@default None]
+    dependencies: string jobject; [@default String.Map.empty]
     dev_dependencies: string jobject; [@key "devDependencies"] [@default String.Map.empty]
   }
   [@@deriving sexp, of_yojson { strict = false }]
