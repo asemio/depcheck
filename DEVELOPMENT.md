@@ -47,7 +47,7 @@ dune clean \
 && DUNE_PROFILE=release dune build \
 && rm -f depcheck.mac \
 && cp _build/default/src/app/depcheck.exe depcheck.mac \
-&& chmod +x depcheck.mac
+&& chmod 755 depcheck.mac
 ```
 
 #### Linux/Docker
@@ -67,6 +67,8 @@ docker run -it --rm \
   -w /repo \
   ubuntu:22.04
   # Then run:
-  ## apt-get update && apt-get install -y musl npm
+  ## apt-get update && apt-get install -y musl curl
+  ## curl -sL https://deb.nodesource.com/setup_18.x -o nodesource_setup.sh
+  ## bash nodesource_setup.sh && apt-get install -y nodejs
   ## /app/depcheck.linux /repo
 ```
