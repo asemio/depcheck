@@ -1,7 +1,7 @@
 open! Core
 open Eio.Std
 
-let version = "0.1.0"
+let version = "0.1.1"
 
 type settings = {
   repos: string list;
