@@ -1,7 +1,6 @@
 (library
   (name analyzer)
   (libraries
-    dispatcher
     render
     utils
 

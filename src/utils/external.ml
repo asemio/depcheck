@@ -4,7 +4,7 @@ let process_run process_mgr ?cwd ?stdin ?stdout ?stderr ?env ?executable ?is_suc
   let open Eio.Process in
   Eio.Switch.run @@ fun sw ->
   let child = spawn ~sw process_mgr ?cwd ?stdin ?stdout ?stderr ?env ?executable args in
-  match child#await, is_success with
+  match await child, is_success with
   | `Exited 0, None -> ()
   | `Exited code, Some f when f code -> ()
   | status, _ ->

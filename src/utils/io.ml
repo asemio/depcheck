@@ -1,13 +1,15 @@
 open! Core
 
+(* TODO: This entire file can now be replaced with Eio calls *)
+
 let stat_is_dir path =
   match Core_unix.stat path with
   | { st_kind = S_DIR; _ } -> Some true
   | _ -> Some false
   | exception _exn -> None
 
-let is_dir dispatcher path =
-  Dispatcher.run_exn dispatcher ~f:(fun () ->
+let is_dir pool path =
+  Eio.Executor_pool.submit_exn pool ~weight:0.01 (fun () ->
     match Core_unix.stat path with
     | { st_kind = S_DIR; _ } -> true
     | _ -> false )
@@ -16,8 +18,8 @@ let create_dir_if_not_exists ~fs path ~perm =
   try Eio.Path.mkdir ~perm Eio.Path.(fs / path) with
   | Eio.Io (Eio.Fs.E (Eio.Fs.Already_exists _), _) -> ()
 
-let file_exists dispatcher path =
-  Dispatcher.run_exn dispatcher ~f:(fun () ->
+let file_exists pool path =
+  Eio.Executor_pool.submit_exn pool ~weight:0.01 (fun () ->
     match Core_unix.stat path with
     | { st_kind = S_REG; _ } -> true
     | _ -> false

@@ -11,7 +11,7 @@ sudo mkdir -p /opt/local/lib
 ### 2. Install your dev environment
 ```sh
 # This will take a few minutes...
-opam switch create . ocaml-variants.5.0.0+options --no-install
+opam switch create . ocaml-variants.5.1.1+options --no-install
 opam install . --deps-only -t
 ```
 

@@ -14,13 +14,19 @@ homepage: "https://github.com/asemio/depcheck"
 dev-repo: "git://github.com/asemio/depcheck"
 doc: "https://github.com/asemio/depcheck"
 bug-reports: "https://github.com/asemio/depcheck/issues"
+pin-depends: [
+  [ "eio.0.13.0.custom" "git+https://github.com/ocaml-multicore/eio.git#464a5623b02fd7a073c86eb052777eec6951b41c" ]
+  [ "eio_main.0.13.0.custom" "git+https://github.com/ocaml-multicore/eio.git#464a5623b02fd7a073c86eb052777eec6951b41c" ]
+  [ "eio_posix.0.13.0.custom" "git+https://github.com/ocaml-multicore/eio.git#464a5623b02fd7a073c86eb052777eec6951b41c" ]
+  [ "eio_linux.0.13.0.custom" "git+https://github.com/ocaml-multicore/eio.git#464a5623b02fd7a073c86eb052777eec6951b41c" ]
+]
 depends: [
-  "ocaml" { >= "5.0.0" }
+  "ocaml" { >= "5.1.0" }
   "dune" { >= "1.9.0" }
 
   "core" { >= "v0.16.0" & < "v0.18.0" }
   "core_unix" { >= "v0.16.0" & < "v0.18.0" }
-  "eio_main" { = "0.11" }
+  "eio_main" { = "0.13.0.custom" }
 
   "yojson"
   "ppx_deriving_yojson" { >= "3.5.2" }

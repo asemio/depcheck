@@ -2,7 +2,6 @@
   (name depcheck)
   (libraries
     analyzer
-    dispatcher
     utils
 
     core

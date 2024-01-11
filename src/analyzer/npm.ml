@@ -345,7 +345,7 @@ let check ~debug ~fs ~process_mgr ~npm_limiter ~directory =
   (* Run [npm install] in temp directory *)
   let run_npm_install () =
     let _npm_install_output =
-      Dispatcher.run_exn npm_limiter ~f:(fun () ->
+      Eio.Executor_pool.submit_exn npm_limiter ~weight:1.0 (fun () ->
         Utils.External.run ~process_mgr
           ~cwd:Eio.Path.(fs / temp_dir)
           [ "npm"; "install"; "--package-lock-only"; "--legacy-peer-deps"; "--json"; "--no-progress" ] )
@@ -376,7 +376,7 @@ let check ~debug ~fs ~process_mgr ~npm_limiter ~directory =
 
   (* Run [npm audit] in temp directory *)
   let audit =
-    Dispatcher.run_exn npm_limiter ~f:(fun () ->
+    Eio.Executor_pool.submit_exn npm_limiter ~weight:1.0 (fun () ->
       Utils.External.run ~process_mgr
         ~cwd:Eio.Path.(fs / temp_dir)
         [ "npm"; "audit"; "--package-lock-only"; "--audit-level=none"; "--json"; "--no-progress" ] )

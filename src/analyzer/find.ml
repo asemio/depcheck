@@ -12,19 +12,19 @@ let detect_lang filenames =
     | _ -> acc )
 
 type package = {
-  fs: Eio.Fs.dir Eio.Path.t;
-  dispatcher: Dispatcher.t;
-  limiter: Dispatcher.t;
+  fs: Eio.Fs.dir_ty Eio.Path.t;
+  pool: Eio.Executor_pool.t;
+  limiter: Eio.Executor_pool.t;
   found: Lang.t list String.Table.t;
   ignore_cache: String.Set.t Lang.SetTable.t;
 }
 
 let rec traverse package directory =
   let dirs, files =
-    Dispatcher.run_exn package.limiter ~f:(fun () ->
+    Eio.Executor_pool.submit_exn package.limiter ~weight:0.01 (fun () ->
       Eio.Path.with_open_dir Eio.Path.(package.fs / directory) Eio.Path.read_dir
       |> List.partition_tf ~f:(fun filename ->
-           Utils.Io.is_dir package.dispatcher (Filename.concat directory filename) ) )
+           Utils.Io.is_dir package.pool (Filename.concat directory filename) ) )
   in
   let detected = detect_lang files in
   (* Collect results *)
@@ -34,13 +34,13 @@ let rec traverse package directory =
   |> Set.to_list
   |> Fiber.List.iter (fun dir -> traverse package (Filename.concat directory dir))
 
-let find ~fs ~domain_mgr dispatcher ~repo_root =
+let find ~fs ~domain_mgr pool ~repo_root =
   Switch.run @@ fun sw ->
   let package =
     {
       fs;
-      dispatcher;
-      limiter = Dispatcher.create ~sw ~num_domains:1 ~domain_concurrency:20 domain_mgr;
+      pool;
+      limiter = Eio.Executor_pool.create ~sw ~domain_count:1 domain_mgr;
       found = String.Table.create ();
       ignore_cache = Lang.SetTable.create ();
     }

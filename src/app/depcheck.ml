@@ -10,22 +10,21 @@ type settings = {
 
 let minimal_npm_major_version = 7
 
-let process_repo env ~debug dispatcher arg_path ~just_one =
-  let repo_root =
-    Utils.External.run ~process_mgr:env#process_mgr [ "realpath"; arg_path ] |> String.rstrip
-  in
-  let found = Analyzer.Find.find ~fs:env#fs ~domain_mgr:env#domain_mgr dispatcher ~repo_root in
+let process_repo env ~debug pool arg_path ~just_one =
+  let fs = Eio.Stdenv.fs env in
+  let process_mgr = Eio.Stdenv.process_mgr env in
+  let domain_mgr = Eio.Stdenv.domain_mgr env in
+  let repo_root = Utils.External.run ~process_mgr [ "realpath"; arg_path ] |> String.rstrip in
+  let found = Analyzer.Find.find ~fs ~domain_mgr pool ~repo_root in
 
   let problems =
     Switch.run @@ fun sw ->
-    let npm_limiter = Dispatcher.create ~sw ~num_domains:1 ~domain_concurrency:1 env#domain_mgr in
+    let npm_limiter = Eio.Executor_pool.create ~sw ~domain_count:1 domain_mgr in
     Hashtbl.to_alist found
     |> Fiber.List.filter_map ~max_fibers:2 (fun (key, (langs : Analyzer.Lang.t list)) ->
          let problems =
            List.map langs ~f:(function
-             | NPM ->
-               Analyzer.Npm.check ~debug ~fs:env#fs ~process_mgr:env#process_mgr ~directory:key
-                 ~npm_limiter
+             | NPM -> Analyzer.Npm.check ~debug ~fs ~process_mgr ~directory:key ~npm_limiter
              | C_Sharp -> [] )
            |> List.concat
          in
@@ -49,13 +48,16 @@ let process_repo env ~debug dispatcher arg_path ~just_one =
   in
   traceln "Generating results: [%s]" target;
   Eio.Path.with_open_out ~create:(`Or_truncate 0o644)
-    Eio.Path.(env#fs / target)
+    Eio.Path.(fs / target)
     (fun file -> Eio.Flow.copy_string (Analyzer.Report.all_to_markdown problems) file)
 
 let main settings env () =
+  let domain_mgr = Eio.Stdenv.domain_mgr env in
   (* Validate npm version *)
   let () =
-    let out = Utils.External.run ~process_mgr:env#process_mgr [ "npm"; "--version" ] |> String.rstrip in
+    let out =
+      Utils.External.run ~process_mgr:(Eio.Stdenv.process_mgr env) [ "npm"; "--version" ] |> String.rstrip
+    in
     match String.split out ~on:'.' with
     | s :: _ ->
       if Int.of_string s < minimal_npm_major_version
@@ -64,13 +66,13 @@ let main settings env () =
   in
 
   Switch.run @@ fun sw ->
-  let dispatcher = Dispatcher.create ~sw ~num_domains:4 ~domain_concurrency:2 env#domain_mgr in
+  let pool = Eio.Executor_pool.create ~sw ~domain_count:4 domain_mgr in
   let just_one =
     match settings.repos with
     | [ _ ] -> true
     | _ -> false
   in
-  Fiber.List.iter (process_repo env ~debug:settings.debug dispatcher ~just_one) settings.repos;
+  Fiber.List.iter (process_repo env ~debug:settings.debug pool ~just_one) settings.repos;
   traceln "Done."
 
 let () =
@@ -101,6 +103,6 @@ let () =
   >>| (fun common () ->
         Eio_main.run (fun env ->
           try main common env () with
-          | exn when not common.debug -> handle_system_failure env#stderr exn ))
+          | exn when not common.debug -> handle_system_failure (Eio.Stdenv.stderr env) exn ))
   |> basic ~summary:"Check your dependencies - https://github.com/asemio/depcheck"
   |> Command_unix.run ~version
